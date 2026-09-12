@@ -4,6 +4,7 @@
 //
 // Endpoints (coinciden EXACTO con ApiService.java de la app Android):
 //   POST  /api/auth/login
+//   POST  /api/registros
 //   GET   /api/registros/hoy
 //   GET   /api/personas/:dni      (requiere Authorization: Bearer <token>)
 //   PATCH /api/registros/:id/salida
@@ -67,6 +68,66 @@ function requiereToken(req, res, next) {
     }
     next();
 }
+
+// ---------------------------------------------------------------
+// POST /api/registros   (publico, sin token)
+// body: { dni, nombres, apellidos, area, asunto }
+// crea/actualiza la persona y registra la visita.
+// ---------------------------------------------------------------
+app.post('/api/registros', (req, res) => {
+    const { dni, nombres, apellidos, area, asunto } = req.body || {};
+
+    if (!dni || !nombres || !apellidos) {
+        return res.status(400).json({
+            ok: false,
+            mensaje: 'Faltan DNI, nombres o apellidos'
+        });
+    }
+
+    try {
+        const registrar = db.transaction(() => {
+            const persona = db.prepare('SELECT dni FROM personas WHERE dni = ?').get(dni);
+
+            if (!persona) {
+                db.prepare(`
+                    INSERT INTO personas (dni, nombres, apellidos, celular)
+                    VALUES (?, ?, ?, ?)
+                `).run(dni, nombres, apellidos, req.body.celular || null);
+            } else {
+                db.prepare(`
+                    UPDATE personas
+                    SET nombres = ?, apellidos = ?, celular = COALESCE(?, celular)
+                    WHERE dni = ?
+                `).run(nombres, apellidos, req.body.celular || null, dni);
+            }
+
+            const fecha = fechaActual();
+            const hora = horaActual();
+
+            const result = db.prepare(`
+                INSERT INTO registros (dni, fecha, hora_ingreso, hora_salida, area, asunto)
+                VALUES (?, ?, ?, NULL, ?, ?)
+            `).run(dni, fecha, hora, area || null, asunto || null);
+
+            return db.prepare(`
+                SELECT r.id, r.dni, r.fecha, r.hora_ingreso, r.hora_salida,
+                       r.area, r.asunto, p.nombres, p.apellidos, p.celular
+                FROM registros r
+                JOIN personas p ON p.dni = r.dni
+                WHERE r.id = ?
+            `).get(result.lastInsertRowid);
+        });
+
+        return res.status(201).json({ ok: true, registro: registrar });
+    } catch (error) {
+        console.error('Error al registrar visita:', error);
+        return res.status(500).json({
+            ok: false,
+            mensaje: 'Error al guardar el registro',
+            error: error.message
+        });
+    }
+});
 
 // ---------------------------------------------------------------
 // GET /api/registros/hoy   (publico, sin token)
